@@ -3,3 +3,6 @@ requests-mock==1.*
 selenium==4.*
 coverage==7.14.1
 geopandas==1.*
+# required by worker_wrapper unit tests importing worker_wrapper.wrapper
+docker==7.1.0
+tenacity==9.1.4
