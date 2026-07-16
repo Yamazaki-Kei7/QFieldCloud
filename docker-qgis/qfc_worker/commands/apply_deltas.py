@@ -29,7 +29,7 @@ from qgis.core import (
 )
 from qgis.PyQt.QtCore import QCoreApplication, QDate, QDateTime, Qt, QTime
 
-from qfc_worker.commands_base import QfcBaseCommand
+from qfc_worker.commands_base import QfcBaseCommand, get_io_dir
 from qfc_worker.utils import (
     download_project,
     start_app,
@@ -1123,7 +1123,7 @@ class ApplyDeltasCommand(QfcBaseCommand):
         parser.add_argument(
             "--delta-file",
             type=str,
-            default="/io/deltafile.json",
+            default=str(get_io_dir() / "deltafile.json"),
             help="Path to the delta file JSON file",
         )
 

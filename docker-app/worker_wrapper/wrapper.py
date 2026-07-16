@@ -264,7 +264,13 @@ class JobRun:
 
             command = self.get_command()
 
-            exit_code, output = self._run_docker(command)
+            if settings.QFIELDCLOUD_WORKER_EXECUTOR == "ecs":
+                # deferred import: keeps boto3 out of the import path of docker-compose deployments
+                from worker_wrapper.executors import ecs as ecs_executor
+
+                exit_code, output = ecs_executor.run_job(self, command)
+            else:
+                exit_code, output = self._run_docker(command)
 
             if exit_code == DOCKER_SIGKILL_EXIT_CODE:
                 feedback["error"] = "Docker engine sigkill."
@@ -703,6 +709,13 @@ class CreateProjectJobRun(JobRun):
 
 
 def cancel_orphaned_workers() -> None:
+    if settings.QFIELDCLOUD_WORKER_EXECUTOR == "ecs":
+        from worker_wrapper.executors import ecs as ecs_executor
+
+        ecs_executor.cancel_orphaned_ecs_workers()
+
+        return
+
     client: docker.client.DockerClient = docker.from_env()
 
     try:

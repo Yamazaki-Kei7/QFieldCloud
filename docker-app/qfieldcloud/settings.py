@@ -850,6 +850,65 @@ QFIELDCLOUD_TRANSFORMATION_GRIDS_VOLUME_NAME = os.environ[
 # Name of the docker compose network to be used by the worker containers
 QFIELDCLOUD_DEFAULT_NETWORK = os.environ.get("QFIELDCLOUD_DEFAULT_NETWORK")
 
+# Executor used by the `worker_wrapper` to run QGIS job containers.
+# "docker" (default): spawn sibling Docker containers via the Docker socket (docker-compose deployments).
+# "ecs": run AWS ECS Fargate tasks (AWS deployments). See `worker_wrapper.executors.ecs`.
+QFIELDCLOUD_WORKER_EXECUTOR = os.environ.get("QFIELDCLOUD_WORKER_EXECUTOR", "docker")
+
+if QFIELDCLOUD_WORKER_EXECUTOR not in ("docker", "ecs"):
+    raise ConfigValidationError(
+        f'Invalid "QFIELDCLOUD_WORKER_EXECUTOR" value: {QFIELDCLOUD_WORKER_EXECUTOR!r}, '
+        'expected one of "docker" or "ecs".'
+    )
+
+# AWS ECS executor settings. Only required when `QFIELDCLOUD_WORKER_EXECUTOR` is "ecs".
+# Name of the ECS cluster where QGIS job tasks are started.
+QFIELDCLOUD_ECS_CLUSTER = os.environ.get("QFIELDCLOUD_ECS_CLUSTER", "")
+
+# Task definition (family or family:revision) for QGIS 3 and QGIS 4 job tasks.
+QFIELDCLOUD_ECS_QGIS3_TASK_DEFINITION = os.environ.get(
+    "QFIELDCLOUD_ECS_QGIS3_TASK_DEFINITION", ""
+)
+QFIELDCLOUD_ECS_QGIS4_TASK_DEFINITION = os.environ.get(
+    "QFIELDCLOUD_ECS_QGIS4_TASK_DEFINITION", ""
+)
+
+# Comma-separated subnet and security group ids used by the QGIS job tasks.
+QFIELDCLOUD_ECS_SUBNET_IDS = [
+    s.strip()
+    for s in os.environ.get("QFIELDCLOUD_ECS_SUBNET_IDS", "").split(",")
+    if s.strip()
+]
+QFIELDCLOUD_ECS_SECURITY_GROUP_IDS = [
+    s.strip()
+    for s in os.environ.get("QFIELDCLOUD_ECS_SECURITY_GROUP_IDS", "").split(",")
+    if s.strip()
+]
+
+# Whether the QGIS job tasks get a public IP (required for internet egress without a NAT gateway).
+QFIELDCLOUD_ECS_ASSIGN_PUBLIC_IP = parse_string_to_bool(
+    os.environ.get("QFIELDCLOUD_ECS_ASSIGN_PUBLIC_IP", "1")
+)
+
+# Container name within the QGIS task definition that runs the job.
+QFIELDCLOUD_ECS_QGIS_CONTAINER_NAME = os.environ.get(
+    "QFIELDCLOUD_ECS_QGIS_CONTAINER_NAME", "qgis"
+)
+
+# CloudWatch Logs group and awslogs stream prefix configured on the QGIS task definition.
+QFIELDCLOUD_ECS_QGIS_LOG_GROUP = os.environ.get("QFIELDCLOUD_ECS_QGIS_LOG_GROUP", "")
+QFIELDCLOUD_ECS_QGIS_LOG_STREAM_PREFIX = os.environ.get(
+    "QFIELDCLOUD_ECS_QGIS_LOG_STREAM_PREFIX", "qgis"
+)
+
+# Path where the shared EFS "io" volume is mounted inside the QGIS task containers.
+QFIELDCLOUD_ECS_IO_MOUNT_PATH = os.environ.get("QFIELDCLOUD_ECS_IO_MOUNT_PATH", "/io")
+
+# `startedBy` marker used to find the QGIS tasks started by this deployment.
+QFIELDCLOUD_ECS_STARTED_BY = os.environ.get(
+    "QFIELDCLOUD_ECS_STARTED_BY", f"qfc-worker-{ENVIRONMENT}"
+)
+
 # `django-auditlog` configurations, read more on https://django-auditlog.readthedocs.io/en/latest/usage.html
 AUDITLOG_LOGENTRY_MODEL = "auditlog.LogEntry"
 AUDITLOG_INCLUDE_TRACKING_MODELS = [
