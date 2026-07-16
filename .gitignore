@@ -23,3 +23,6 @@ docker-qgis/convert2qgis
 
 # compiled translations
 docker-app/qfieldcloud/locale/**/*.mo
+
+# Superpowers brainstorming sessions
+.superpowers/
