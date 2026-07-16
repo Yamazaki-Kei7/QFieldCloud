@@ -67,3 +67,11 @@ class PureHelpersTestCase(SimpleTestCase):
             "stoppedReason": "Task failed to start",
         }
         self.assertIsNone(ecs.exit_code_from_described_task(task))
+
+    def test_exit_code_from_described_task_success_zero(self):
+        task = {"containers": [{"name": "qgis", "exitCode": 0}]}
+        self.assertEqual(ecs.exit_code_from_described_task(task), 0)
+
+    def test_exit_code_from_described_task_no_containers(self):
+        task = {"containers": [], "stoppedReason": "Task failed to start"}
+        self.assertIsNone(ecs.exit_code_from_described_task(task))
