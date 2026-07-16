@@ -20,7 +20,7 @@ from django.conf import settings
 from django.utils import timezone
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_random_exponential,
 )
@@ -35,6 +35,13 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_S = 5
 RUN_TASK_RETRY_COUNT = 5
 RUN_TASK_RETRY_MAX_WAIT_S = 10
+
+RETRIABLE_CLIENT_ERROR_CODES = {
+    "InternalServerError",
+    "ServerException",
+    "ServiceUnavailableException",
+    "ThrottlingException",
+}
 
 
 def task_id_from_arn(task_arn: str) -> str:
@@ -106,6 +113,22 @@ def _get_task_definition(qgis_image_name: str) -> str:
     return task_definition
 
 
+def _is_retriable_run_task_error(err: BaseException) -> bool:
+    """RunTask failures worth retrying: capacity, throttling, server-side and
+    network-level errors. Misconfiguration (e.g. AccessDenied, ClusterNotFound)
+    fails fast instead of being retried."""
+    if isinstance(err, EcsRunTaskError):
+        return True
+
+    if isinstance(err, ClientError):
+        error_code = err.response.get("Error", {}).get("Code", "")
+
+        return error_code in RETRIABLE_CLIENT_ERROR_CODES
+
+    # BotoCoreError covers network-level failures (e.g. EndpointConnectionError)
+    return isinstance(err, BotoCoreError)
+
+
 def _run_task_with_retry(
     ecs_client: Any, run_task_kwargs: dict[str, Any]
 ) -> dict[str, Any]:
@@ -122,7 +145,7 @@ def _run_task_with_retry(
     retriable = retry(
         wait=wait_random_exponential(max=RUN_TASK_RETRY_MAX_WAIT_S),
         stop=stop_after_attempt(RUN_TASK_RETRY_COUNT),
-        retry=retry_if_exception_type((EcsRunTaskError, ClientError, BotoCoreError)),
+        retry=retry_if_exception(_is_retriable_run_task_error),
         reraise=True,
     )
 
@@ -259,6 +282,7 @@ def run_job(job_run: "JobRun", command: list[str]) -> tuple[int, bytes]:
     exit_code = exit_code_from_described_task(stopped_task)
 
     if exit_code is None:
+        logger.info(f"QGIS ECS task logs:\n{logs.decode()}")
         raise JobException(
             "The QGIS ECS task stopped without an exit code: "
             f"{stopped_task.get('stoppedReason', 'unknown reason')}"

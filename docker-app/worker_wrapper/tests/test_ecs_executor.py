@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from botocore.exceptions import ClientError
 from django.test import SimpleTestCase
 from django.test.utils import override_settings
 
@@ -214,3 +215,15 @@ class RunJobTestCase(SimpleTestCase):
             ecs.run_job(job_run, ["package", "project-uuid-1"])
 
         self.assertIn("CannotPullContainerError", str(ctx.exception))
+
+    def test_run_job_does_not_retry_non_retriable_client_error(self):
+        self.ecs_client.run_task.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "nope"}},
+            "RunTask",
+        )
+        job_run = make_fake_job_run()
+
+        with self.assertRaises(JobException):
+            ecs.run_job(job_run, ["package", "project-uuid-1"])
+
+        self.assertEqual(self.ecs_client.run_task.call_count, 1)
