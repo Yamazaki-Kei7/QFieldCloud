@@ -2,12 +2,23 @@
 
 import argparse
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 from qfc_worker.workflow import Workflow, run_workflow
 
 logger = logging.getLogger(__name__)
+
+
+def get_io_dir() -> Path:
+    """Directory used to exchange files (feedback.json, deltafile.json) with the `worker_wrapper`.
+
+    Defaults to `/io` (docker-compose deployments, mounted by the wrapper).
+    AWS deployments mount a shared EFS volume and pass a per-job subdirectory
+    via the `QFC_IO_DIR` environment variable.
+    """
+    return Path(os.environ.get("QFC_IO_DIR", "/io"))
 
 
 parser = argparse.ArgumentParser(prog="COMMAND")
@@ -76,7 +87,7 @@ class QfcBaseCommand(metaclass=QfcBaseCommandRegistry):
 
         run_workflow(
             workflow,
-            Path("/io/feedback.json"),
+            get_io_dir() / "feedback.json",
         )
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
