@@ -227,3 +227,35 @@ class RunJobTestCase(SimpleTestCase):
             ecs.run_job(job_run, ["package", "project-uuid-1"])
 
         self.assertEqual(self.ecs_client.run_task.call_count, 1)
+
+
+@override_settings(**ECS_TEST_SETTINGS)
+class CancelOrphanedEcsWorkersTestCase(SimpleTestCase):
+    def test_stops_only_orphaned_tasks(self):
+        ecs_client = mock.Mock()
+        paginator = mock.Mock()
+        paginator.paginate.return_value = [
+            {"taskArns": [TASK_ARN]},
+            {
+                "taskArns": [
+                    "arn:aws:ecs:ap-northeast-1:123456789012:task/qfc-cluster/ffffffffffffffffffffffffffffffff"
+                ]
+            },
+        ]
+        ecs_client.get_paginator.return_value = paginator
+
+        with (
+            mock.patch.object(ecs, "get_ecs_client", return_value=ecs_client),
+            mock.patch.object(
+                ecs,
+                "_get_known_container_ids",
+                return_value=["0123456789abcdef0123456789abcdef"],
+            ),
+        ):
+            ecs.cancel_orphaned_ecs_workers()
+
+        ecs_client.stop_task.assert_called_once_with(
+            cluster="qfc-cluster",
+            task="ffffffffffffffffffffffffffffffff",
+            reason="Orphaned QFieldCloud worker task.",
+        )
