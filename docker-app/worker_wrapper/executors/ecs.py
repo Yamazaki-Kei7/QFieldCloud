@@ -55,6 +55,15 @@ def task_id_from_arn(task_arn: str) -> str:
 def build_qgis_environment(
     job_environment: dict[str, str], io_subdir: str
 ) -> list[dict[str, str]]:
+    """Builds the RunTask environment overrides for the QGIS container.
+
+    NOTE cross-container file exchange contract: the wrapper creates
+    `shared_tempdir` under its local `/tmp` (see `JobRun.__init__`), while the
+    QGIS task writes to `QFC_IO_DIR` under `QFIELDCLOUD_ECS_IO_MOUNT_PATH`.
+    Both paths MUST be backed by the same shared EFS volume (mounted at `/tmp`
+    in the wrapper task and at the IO mount path in the QGIS task definition),
+    otherwise every job fails with a missing `feedback.json`.
+    """
     io_mount_path = settings.QFIELDCLOUD_ECS_IO_MOUNT_PATH.rstrip("/")
     environment = {
         **job_environment,

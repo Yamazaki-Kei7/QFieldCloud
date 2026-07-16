@@ -855,6 +855,12 @@ QFIELDCLOUD_DEFAULT_NETWORK = os.environ.get("QFIELDCLOUD_DEFAULT_NETWORK")
 # "ecs": run AWS ECS Fargate tasks (AWS deployments). See `worker_wrapper.executors.ecs`.
 QFIELDCLOUD_WORKER_EXECUTOR = os.environ.get("QFIELDCLOUD_WORKER_EXECUTOR", "docker")
 
+if QFIELDCLOUD_WORKER_EXECUTOR not in ("docker", "ecs"):
+    raise ConfigValidationError(
+        f'Invalid "QFIELDCLOUD_WORKER_EXECUTOR" value: {QFIELDCLOUD_WORKER_EXECUTOR!r}, '
+        'expected one of "docker" or "ecs".'
+    )
+
 # AWS ECS executor settings. Only required when `QFIELDCLOUD_WORKER_EXECUTOR` is "ecs".
 # Name of the ECS cluster where QGIS job tasks are started.
 QFIELDCLOUD_ECS_CLUSTER = os.environ.get("QFIELDCLOUD_ECS_CLUSTER", "")
