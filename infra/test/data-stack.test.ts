@@ -1,0 +1,45 @@
+import * as cdk from "aws-cdk-lib";
+import { Template, Match } from "aws-cdk-lib/assertions";
+import { NetworkStack } from "../lib/network-stack";
+import { DataStack } from "../lib/data-stack";
+
+const synth = (): Template => {
+  const app = new cdk.App();
+  const env = { account: "123456789012", region: "ap-northeast-1" };
+  const network = new NetworkStack(app, "TestNetwork", { env });
+  const data = new DataStack(app, "TestData", { env, vpc: network.vpc });
+  return Template.fromStack(data);
+};
+
+test("files bucket is versioned and private", () => {
+  const template = synth();
+  template.hasResourceProperties("AWS::S3::Bucket", {
+    VersioningConfiguration: { Status: "Enabled" },
+    PublicAccessBlockConfiguration: Match.objectLike({ BlockPublicAcls: true }),
+  });
+});
+
+test("EFS has io and grids access points", () => {
+  const template = synth();
+  template.resourceCountIs("AWS::EFS::AccessPoint", 2);
+  template.hasResourceProperties("AWS::EFS::AccessPoint", {
+    RootDirectory: Match.objectLike({ Path: "/io" }),
+  });
+  template.hasResourceProperties("AWS::EFS::AccessPoint", {
+    RootDirectory: Match.objectLike({ Path: "/transformation_grids" }),
+  });
+});
+
+test("Aurora is serverless v2 postgres", () => {
+  const template = synth();
+  template.hasResourceProperties("AWS::RDS::DBCluster", {
+    Engine: "aurora-postgresql",
+    ServerlessV2ScalingConfiguration: Match.objectLike({ MinCapacity: 0.5 }),
+  });
+});
+
+test("app secrets exist for django keys", () => {
+  const template = synth();
+  // SECRET_KEY + SALT_KEY + SES SMTP (DB credential secret is created by rds)
+  template.resourceCountIs("AWS::SecretsManager::Secret", 4);
+});
