@@ -11,9 +11,24 @@ ECS APIs accept the bare task id as long as the cluster is provided.
 """
 
 import logging
-from typing import Any
+import time
+from typing import TYPE_CHECKING, Any
 
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from django.conf import settings
+from django.utils import timezone
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_random_exponential,
+)
+
+from worker_wrapper.wrapper import TIMEOUT_ERROR_EXIT_CODE, JobException
+
+if TYPE_CHECKING:
+    from worker_wrapper.wrapper import JobRun
 
 logger = logging.getLogger(__name__)
 
@@ -62,3 +77,193 @@ def exit_code_from_described_task(task: dict[str, Any]) -> int | None:
             return int(exit_code) if exit_code is not None else None
 
     return None
+
+
+class EcsRunTaskError(Exception):
+    """Raised when ECS RunTask does not return a started task, e.g. due to capacity issues."""
+
+
+def get_ecs_client() -> Any:
+    return boto3.client("ecs")
+
+
+def get_logs_client() -> Any:
+    return boto3.client("logs")
+
+
+def _get_task_definition(qgis_image_name: str) -> str:
+    task_definitions = {
+        settings.QFIELDCLOUD_QGIS3_IMAGE_NAME: settings.QFIELDCLOUD_ECS_QGIS3_TASK_DEFINITION,
+        settings.QFIELDCLOUD_QGIS4_IMAGE_NAME: settings.QFIELDCLOUD_ECS_QGIS4_TASK_DEFINITION,
+    }
+    task_definition = task_definitions.get(qgis_image_name, "")
+
+    if not task_definition:
+        raise JobException(
+            f"No ECS task definition configured for QGIS image {qgis_image_name!r}."
+        )
+
+    return task_definition
+
+
+def _run_task_with_retry(
+    ecs_client: Any, run_task_kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    def do_run_task() -> dict[str, Any]:
+        response = ecs_client.run_task(**run_task_kwargs)
+        tasks = response.get("tasks", [])
+
+        if not tasks:
+            failures = response.get("failures", [])
+            raise EcsRunTaskError(f"ECS RunTask returned no started task: {failures}")
+
+        return tasks[0]
+
+    retriable = retry(
+        wait=wait_random_exponential(max=RUN_TASK_RETRY_MAX_WAIT_S),
+        stop=stop_after_attempt(RUN_TASK_RETRY_COUNT),
+        retry=retry_if_exception_type((EcsRunTaskError, ClientError, BotoCoreError)),
+        reraise=True,
+    )
+
+    try:
+        return retriable(do_run_task)()
+    except (EcsRunTaskError, ClientError, BotoCoreError) as err:
+        raise JobException(f"Failed to start the QGIS ECS task: {err}") from err
+
+
+def _wait_until_stopped(
+    ecs_client: Any, task_id: str, timeout_secs: int
+) -> dict[str, Any] | None:
+    """Polls the task until it is STOPPED. Returns the described task, or `None` on timeout."""
+    deadline = time.monotonic() + timeout_secs
+
+    while True:
+        response = ecs_client.describe_tasks(
+            cluster=settings.QFIELDCLOUD_ECS_CLUSTER, tasks=[task_id]
+        )
+        tasks = response.get("tasks", [])
+
+        if tasks and tasks[0].get("lastStatus") == "STOPPED":
+            return tasks[0]
+
+        if time.monotonic() >= deadline:
+            return None
+
+        time.sleep(POLL_INTERVAL_S)
+
+
+def _read_task_logs(logs_client: Any, task_id: str) -> bytes:
+    lines: list[str] = []
+    kwargs: dict[str, Any] = {
+        "logGroupName": settings.QFIELDCLOUD_ECS_QGIS_LOG_GROUP,
+        "logStreamName": derive_log_stream_name(task_id),
+        "startFromHead": True,
+    }
+
+    try:
+        while True:
+            response = logs_client.get_log_events(**kwargs)
+            lines.extend(event["message"] for event in response.get("events", []))
+
+            next_token = response.get("nextForwardToken")
+
+            # CloudWatch signals the end of the stream by returning the same token
+            if not next_token or next_token == kwargs.get("nextToken"):
+                break
+
+            kwargs["nextToken"] = next_token
+    except (ClientError, BotoCoreError) as err:
+        logger.warning(f"Failed to read CloudWatch logs for task {task_id}.", exc_info=err)
+        return b"[QFC/Worker/1001] Failed to read logs."
+
+    return "\n".join(lines).encode()
+
+
+def run_job(job_run: "JobRun", command: list[str]) -> tuple[int, bytes]:
+    """ECS counterpart of `JobRun._run_docker`: returns `(exit_code, logs)`."""
+    assert settings.QFIELDCLOUD_ECS_CLUSTER
+
+    ecs_client = get_ecs_client()
+    logs_client = get_logs_client()
+
+    task_definition = _get_task_definition(job_run.get_qgis_image())
+    container_environment = build_qgis_environment(
+        job_run.get_environment(), job_run.shared_tempdir.name
+    )
+
+    run_task_kwargs = {
+        "cluster": settings.QFIELDCLOUD_ECS_CLUSTER,
+        "taskDefinition": task_definition,
+        "launchType": "FARGATE",
+        "startedBy": settings.QFIELDCLOUD_ECS_STARTED_BY,
+        "networkConfiguration": {
+            "awsvpcConfiguration": {
+                "subnets": settings.QFIELDCLOUD_ECS_SUBNET_IDS,
+                "securityGroups": settings.QFIELDCLOUD_ECS_SECURITY_GROUP_IDS,
+                "assignPublicIp": (
+                    "ENABLED"
+                    if settings.QFIELDCLOUD_ECS_ASSIGN_PUBLIC_IP
+                    else "DISABLED"
+                ),
+            }
+        },
+        "overrides": {
+            "containerOverrides": [
+                {
+                    "name": settings.QFIELDCLOUD_ECS_QGIS_CONTAINER_NAME,
+                    "command": command,
+                    "environment": container_environment,
+                }
+            ]
+        },
+        "tags": [
+            {"key": "qfc:job_id", "value": str(job_run.job.id)},
+            {"key": "qfc:project_id", "value": str(job_run.job.project_id)},
+            {"key": "qfc:job_type", "value": str(job_run.job.type)},
+        ],
+    }
+
+    logger.info(f"Execute on ECS: {' '.join(command)}")
+
+    # `docker_started_at`/`docker_finished_at` tracks the time spent on the job task only
+    job_run.job.docker_started_at = timezone.now()
+    job_run.job.save(update_fields=["docker_started_at"])
+
+    task = _run_task_with_retry(ecs_client, run_task_kwargs)
+    task_id = task_id_from_arn(task["taskArn"])
+
+    job_run.job.container_id = task_id
+    job_run.job.save(update_fields=["docker_started_at", "container_id"])
+    logger.info(f"Starting worker ECS task {task_id} ...")
+
+    stopped_task = _wait_until_stopped(
+        ecs_client, task_id, job_run.container_timeout_secs
+    )
+
+    job_run.job.docker_finished_at = timezone.now()
+    job_run.job.save(update_fields=["docker_finished_at"])
+
+    if stopped_task is None:
+        ecs_client.stop_task(
+            cluster=settings.QFIELDCLOUD_ECS_CLUSTER,
+            task=task_id,
+            reason=f"QFieldCloud job {job_run.job_id} timed out.",
+        )
+        logs = _read_task_logs(logs_client, task_id)
+        logs += f"\nTimeout error! The job failed to finish within {job_run.container_timeout_secs} seconds!\n".encode()
+
+        return TIMEOUT_ERROR_EXIT_CODE, logs
+
+    logs = _read_task_logs(logs_client, task_id)
+    exit_code = exit_code_from_described_task(stopped_task)
+
+    if exit_code is None:
+        raise JobException(
+            "The QGIS ECS task stopped without an exit code: "
+            f"{stopped_task.get('stoppedReason', 'unknown reason')}"
+        )
+
+    logger.info(f"Finished execution with code {exit_code}, logs:\n{logs.decode()}")
+
+    return exit_code, logs
