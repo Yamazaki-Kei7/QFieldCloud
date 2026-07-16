@@ -137,6 +137,7 @@
 - `ecs:RunTask` / `DescribeTasks` / `StopTask` / `ListTasks`（クラスター・タスク定義ファミリーに限定）
 - `iam:PassRole`（QGIS タスクの実行ロール・タスクロールのみ）
 - `logs:GetLogEvents`（QGIS ログループのみ）
+- 運用ノート: QGIS タスクへ渡す環境変数は `ecs:DescribeTasks` や CloudTrail から参照可能（§9 の受容済みリスク参照）。人間用 IAM プリンシパルには `ecs:DescribeTasks` と CloudTrail 閲覧権限を管理者のみに限定すること。
 
 ### 4.5 トレードオフ（承認済み）
 
@@ -230,6 +231,7 @@
 | ジョブ開始レイテンシ（2〜4分）が現場で不評 | SOCI / zstd による pull 高速化を後付け検討 |
 | SES サンドボックス解除の審査 | 送信元検証 + 解除申請を構築初期に実施（リードタイムあり） |
 | Aurora の PostGIS バージョン制約 | 構築時に QFieldCloud 要件（PostGIS 3系）と Aurora サポートバージョンを照合 |
+| QGIS ジョブへ渡す環境変数（短命ワーカートークン・PGSERVICE・ユーザー定義シークレット）が RunTask の平文 `environment` として CloudTrail と `ecs:DescribeTasks` に露出する | **受容（2026-07-16 ユーザー承認）**。社内専用 AWS アカウント・限定された IAM ユーザーが前提。運用では `ecs:DescribeTasks`/CloudTrail 閲覧を管理者に限定（§4.4）。将来の強化案: EFS のジョブディレクトリ経由のファイル受け渡しへ切替（docker-qgis エントリポイント改修が必要） |
 
 ## 10. スコープ外（明示）
 
