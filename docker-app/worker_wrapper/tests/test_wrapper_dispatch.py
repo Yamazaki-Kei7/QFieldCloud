@@ -35,7 +35,9 @@ class RunDispatchTestCase(SimpleTestCase):
         job_run.get_command = mock.Mock(return_value=["package", "project-uuid-1"])
         job_run._run_docker = mock.Mock()
 
-        with mock.patch.object(ecs, "run_job", return_value=(0, b"job logs")) as run_job:
+        with mock.patch.object(
+            ecs, "run_job", return_value=(0, b"job logs")
+        ) as run_job:
             job_run.run()
 
         run_job.assert_called_once_with(job_run, ["package", "project-uuid-1"])
@@ -43,6 +45,7 @@ class RunDispatchTestCase(SimpleTestCase):
         # the happy path must have completed, not silently failed in run()'s global handler
         self.assertEqual(job_run.job.status, wrapper.Job.Status.FINISHED)
 
+    @override_settings(QFIELDCLOUD_WORKER_EXECUTOR="docker")
     def test_run_uses_docker_executor_by_default(self):
         job_run = make_job_run_for_dispatch(self.shared_tempdir)
         job_run.get_command = mock.Mock(return_value=["package", "project-uuid-1"])
@@ -68,6 +71,7 @@ class CancelOrphanedWorkersDispatchTestCase(SimpleTestCase):
         cancel_ecs.assert_called_once_with()
         from_env.assert_not_called()
 
+    @override_settings(QFIELDCLOUD_WORKER_EXECUTOR="docker")
     def test_uses_docker_by_default(self):
         docker_client = mock.Mock()
         docker_client.containers.list.return_value = []

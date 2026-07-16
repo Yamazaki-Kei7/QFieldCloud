@@ -210,7 +210,9 @@ def _read_task_logs(logs_client: Any, task_id: str) -> bytes:
 
             kwargs["nextToken"] = next_token
     except (ClientError, BotoCoreError) as err:
-        logger.warning(f"Failed to read CloudWatch logs for task {task_id}.", exc_info=err)
+        logger.warning(
+            f"Failed to read CloudWatch logs for task {task_id}.", exc_info=err
+        )
         return b"[QFC/Worker/1001] Failed to read logs."
 
     return "\n".join(lines).encode()
