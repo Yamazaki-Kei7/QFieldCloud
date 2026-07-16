@@ -62,7 +62,7 @@ export class DataStack extends cdk.Stack {
     // Aurora Serverless v2 with PostGIS support (PostgreSQL 16 family).
     this.dbCluster = new rds.DatabaseCluster(this, "Database", {
       engine: rds.DatabaseClusterEngine.auroraPostgres({
-        version: rds.AuroraPostgresEngineVersion.of("16.8", "16"),
+        version: rds.AuroraPostgresEngineVersion.VER_16_8,
       }),
       writer: rds.ClusterInstance.serverlessV2("Writer"),
       serverlessV2MinCapacity: CONFIG.aurora.minAcu,

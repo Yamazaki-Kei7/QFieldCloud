@@ -43,3 +43,41 @@ test("app secrets exist for django keys", () => {
   // SECRET_KEY + SALT_KEY + SES SMTP (DB credential secret is created by rds)
   template.resourceCountIs("AWS::SecretsManager::Secret", 4);
 });
+
+test("access points enforce the cross-container sharing permissions", () => {
+  const template = synth();
+  template.hasResourceProperties("AWS::EFS::AccessPoint", {
+    RootDirectory: Match.objectLike({
+      Path: "/io",
+      CreationInfo: Match.objectLike({ Permissions: "777", OwnerUid: "0" }),
+    }),
+  });
+  template.hasResourceProperties("AWS::EFS::AccessPoint", {
+    RootDirectory: Match.objectLike({
+      Path: "/transformation_grids",
+      CreationInfo: Match.objectLike({ Permissions: "755" }),
+    }),
+  });
+});
+
+test("bucket enforces SSL and Aurora pins engine and capacity", () => {
+  const template = synth();
+  template.hasResourceProperties("AWS::S3::BucketPolicy", {
+    PolicyDocument: Match.objectLike({
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Effect: "Deny",
+          Condition: { Bool: { "aws:SecureTransport": "false" } },
+        }),
+      ]),
+    }),
+  });
+  template.hasResourceProperties("AWS::RDS::DBCluster", {
+    EngineVersion: "16.8",
+    StorageEncrypted: true,
+    ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 4 },
+  });
+  template.hasResourceProperties("AWS::SecretsManager::Secret", {
+    GenerateSecretString: Match.objectLike({ PasswordLength: 50 }),
+  });
+});
