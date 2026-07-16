@@ -231,6 +231,10 @@ class RunJobTestCase(SimpleTestCase):
 
 @override_settings(**ECS_TEST_SETTINGS)
 class CancelOrphanedEcsWorkersTestCase(SimpleTestCase):
+    def setUp(self):
+        ecs._last_orphan_cleanup_monotonic = None
+        self.addCleanup(setattr, ecs, "_last_orphan_cleanup_monotonic", None)
+
     def test_stops_only_orphaned_tasks(self):
         ecs_client = mock.Mock()
         paginator = mock.Mock()
@@ -259,3 +263,59 @@ class CancelOrphanedEcsWorkersTestCase(SimpleTestCase):
             task="ffffffffffffffffffffffffffffffff",
             reason="Orphaned QFieldCloud worker task.",
         )
+
+    def test_throttles_repeated_calls(self):
+        ecs_client = mock.Mock()
+        paginator = mock.Mock()
+        paginator.paginate.return_value = [{"taskArns": []}]
+        ecs_client.get_paginator.return_value = paginator
+
+        with mock.patch.object(ecs, "get_ecs_client", return_value=ecs_client):
+            ecs.cancel_orphaned_ecs_workers()
+            ecs.cancel_orphaned_ecs_workers()
+
+        self.assertEqual(ecs_client.get_paginator.call_count, 1)
+
+    def test_returns_early_when_list_tasks_fails(self):
+        ecs_client = mock.Mock()
+        ecs_client.get_paginator.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
+            "ListTasks",
+        )
+
+        with (
+            mock.patch.object(ecs, "get_ecs_client", return_value=ecs_client),
+            mock.patch.object(ecs, "_get_known_container_ids") as get_known,
+        ):
+            ecs.cancel_orphaned_ecs_workers()
+
+        get_known.assert_not_called()
+        ecs_client.stop_task.assert_not_called()
+
+    def test_continues_stopping_after_stop_task_failure(self):
+        ecs_client = mock.Mock()
+        paginator = mock.Mock()
+        paginator.paginate.return_value = [
+            {
+                "taskArns": [
+                    "arn:aws:ecs:ap-northeast-1:123456789012:task/qfc-cluster/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "arn:aws:ecs:ap-northeast-1:123456789012:task/qfc-cluster/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ]
+            }
+        ]
+        ecs_client.get_paginator.return_value = paginator
+        ecs_client.stop_task.side_effect = [
+            ClientError(
+                {"Error": {"Code": "InvalidParameterException", "Message": "gone"}},
+                "StopTask",
+            ),
+            {},
+        ]
+
+        with (
+            mock.patch.object(ecs, "get_ecs_client", return_value=ecs_client),
+            mock.patch.object(ecs, "_get_known_container_ids", return_value=[]),
+        ):
+            ecs.cancel_orphaned_ecs_workers()
+
+        self.assertEqual(ecs_client.stop_task.call_count, 2)

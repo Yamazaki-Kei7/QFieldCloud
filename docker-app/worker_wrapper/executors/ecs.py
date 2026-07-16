@@ -43,6 +43,10 @@ RETRIABLE_CLIENT_ERROR_CODES = {
     "ThrottlingException",
 }
 
+ORPHAN_CLEANUP_INTERVAL_S = 60
+
+_last_orphan_cleanup_monotonic: float | None = None
+
 
 def task_id_from_arn(task_arn: str) -> str:
     return task_arn.rsplit("/", 1)[-1]
@@ -308,18 +312,44 @@ def cancel_orphaned_ecs_workers() -> None:
 
     Stops QGIS tasks started by this deployment whose `Job` row no longer
     exists in the database (e.g. the `Project` was deleted mid-job).
+
+    Unlike the local Docker API, ListTasks is a remote, rate-limited call,
+    while the dequeue loop invokes this function about once per second.
+    Runs are therefore throttled to once per `ORPHAN_CLEANUP_INTERVAL_S`.
+    Failures are logged and swallowed (best-effort cleanup, mirroring the
+    Docker implementation).
     """
+    global _last_orphan_cleanup_monotonic
+
+    now = time.monotonic()
+
+    if (
+        _last_orphan_cleanup_monotonic is not None
+        and now - _last_orphan_cleanup_monotonic < ORPHAN_CLEANUP_INTERVAL_S
+    ):
+        return
+
+    _last_orphan_cleanup_monotonic = now
+
     ecs_client = get_ecs_client()
 
     running_task_ids: list[str] = []
-    paginator = ecs_client.get_paginator("list_tasks")
 
-    for page in paginator.paginate(
-        cluster=settings.QFIELDCLOUD_ECS_CLUSTER,
-        startedBy=settings.QFIELDCLOUD_ECS_STARTED_BY,
-        desiredStatus="RUNNING",
-    ):
-        running_task_ids.extend(task_id_from_arn(arn) for arn in page["taskArns"])
+    try:
+        paginator = ecs_client.get_paginator("list_tasks")
+
+        for page in paginator.paginate(
+            cluster=settings.QFIELDCLOUD_ECS_CLUSTER,
+            startedBy=settings.QFIELDCLOUD_ECS_STARTED_BY,
+            desiredStatus="RUNNING",
+        ):
+            running_task_ids.extend(task_id_from_arn(arn) for arn in page["taskArns"])
+    except (ClientError, BotoCoreError) as err:
+        logger.warning(
+            "Failed to list ECS worker tasks for orphan cleanup.", exc_info=err
+        )
+
+        return
 
     if not running_task_ids:
         return
@@ -327,9 +357,18 @@ def cancel_orphaned_ecs_workers() -> None:
     known_container_ids = _get_known_container_ids(running_task_ids)
 
     for task_id in find_orphan_task_ids(running_task_ids, known_container_ids):
-        ecs_client.stop_task(
-            cluster=settings.QFIELDCLOUD_ECS_CLUSTER,
-            task=task_id,
-            reason="Orphaned QFieldCloud worker task.",
-        )
+        try:
+            ecs_client.stop_task(
+                cluster=settings.QFIELDCLOUD_ECS_CLUSTER,
+                task=task_id,
+                reason="Orphaned QFieldCloud worker task.",
+            )
+        except (ClientError, BotoCoreError) as err:
+            # the task may have stopped on its own in the meantime
+            logger.warning(
+                f"Failed to stop orphaned ECS worker task {task_id}.", exc_info=err
+            )
+
+            continue
+
         logger.info(f"Cancel orphaned worker ECS task {task_id}")
