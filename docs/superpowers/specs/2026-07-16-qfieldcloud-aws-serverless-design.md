@@ -129,7 +129,7 @@
 - 現行: wrapper が `tempfile.mkdtemp(dir=TMP_FILE)` で作った一時ディレクトリをホストバインドで QGIS コンテナの `/io` にマウント。中身は主に `feedback.json`（プロジェクトデータ本体は QGIS コンテナが `QFIELDCLOUD_URL` + ワーカートークンで API から直接取得/返却）。
 - 新構成: EFS アクセスポイント `/io` を wrapper タスク（`TMP_DIRECTORY` として）と QGIS タスク定義（`/mnt/io`）の両方にマウント。wrapper の既存 mkdtemp はそのまま動く。
 - **QGIS 側の改修は1箇所**: `docker-qgis/qfc_worker/commands_base.py:79` の `Path("/io/feedback.json")` を環境変数 `QFC_IO_DIR`（デフォルト `/io`）化し、エグゼキュータが `QFC_IO_DIR=/mnt/io/<ジョブ用サブディレクトリ>` を注入。後方互換のため upstream への PR 提案も可能。
-- 後始末: ジョブ完了時に wrapper がサブディレクトリを削除。EFS ライフサイクルポリシーをバックストップとして設定。
+- 後始末: ジョブ完了時に wrapper がサブディレクトリを削除（これが唯一の削除手段）。EFS のライフサイクルポリシー（IA移行）はコスト最適化であり自動削除ではない点に注意 — wrapper 異常終了で孤児化したディレクトリは残るが、内容は feedback.json 中心の数MB規模で実害は小さい（2026-07-17 レビュー指摘で表現を是正）。
 
 ### 4.4 IAM（wrapper タスクロール）
 
