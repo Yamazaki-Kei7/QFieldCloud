@@ -101,4 +101,11 @@ test("app container defines env vars that settings.py reads unconditionally", ()
   for (const key of required) {
     expect(envNames.has(key)).toBe(true);
   }
+
+  // EMAIL_USE_TLS must be "true"/"false" (settings.py checks .lower() == "true",
+  // not parse_string_to_bool), otherwise SES STARTTLS silently stays off
+  const tlsEnv = (appContainer.Environment as Array<{ Name: string; Value: string }>).find(
+    (e) => e.Name === "EMAIL_USE_TLS",
+  );
+  expect(tlsEnv?.Value).toBe("true");
 });

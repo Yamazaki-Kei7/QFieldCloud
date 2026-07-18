@@ -313,12 +313,15 @@ export class AppStack extends cdk.Stack {
         resources: [`${qgisLogGroup.logGroupArn}:*`],
       }),
     );
-    // Fargate tags on RunTask
+    // Fargate tags on RunTask. `ecs:cluster` is not a valid condition key for
+    // TagResource (it isn't part of the tagging request context); the
+    // documented way to scope tag-on-create is `ecs:CreateAction` (see AWS
+    // ECS developer guide "Grant permission to tag resources on creation").
     workerTaskDef.taskRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
         actions: ["ecs:TagResource"],
         resources: ["*"],
-        conditions: { ArnEquals: { "ecs:cluster": this.cluster.clusterArn } },
+        conditions: { StringEquals: { "ecs:CreateAction": "RunTask" } },
       }),
     );
 
