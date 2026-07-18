@@ -109,3 +109,20 @@ test("app container defines env vars that settings.py reads unconditionally", ()
   );
   expect(tlsEnv?.Value).toBe("true");
 });
+
+test("app service waits 300s before failing health checks", () => {
+  const template = synthApp();
+  template.hasResourceProperties("AWS::ECS::Service", {
+    HealthCheckGracePeriodSeconds: 300,
+    NetworkConfiguration: Match.objectLike({
+      AwsvpcConfiguration: Match.objectLike({ AssignPublicIp: "ENABLED" }),
+    }),
+  });
+});
+
+test("target group health check hits the status endpoint", () => {
+  const template = synthApp();
+  template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", {
+    HealthCheckPath: "/api/v1/status/",
+  });
+});

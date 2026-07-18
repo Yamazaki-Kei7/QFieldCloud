@@ -9,6 +9,7 @@ import {
   aws_iam as iam,
   aws_logs as logs,
   aws_s3 as s3,
+  aws_s3_deployment as s3deploy,
   aws_secretsmanager as sm,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
@@ -27,11 +28,11 @@ export class AppStack extends cdk.Stack {
   public readonly cluster: ecs.Cluster;
   public readonly alb: elbv2.ApplicationLoadBalancer;
   public readonly apiDistribution: cloudfront.Distribution;
-  public readonly appService!: ecs.FargateService; // assigned in Task 6
-  public readonly workerService!: ecs.FargateService; // assigned in Task 6
+  public readonly appService!: ecs.FargateService;
+  public readonly workerService!: ecs.FargateService;
   public readonly appLogGroup: logs.LogGroup;
   public readonly workerLogGroup: logs.LogGroup;
-  public readonly targetGroup!: elbv2.ApplicationTargetGroup; // assigned in Task 6
+  public readonly targetGroup!: elbv2.ApplicationTargetGroup;
   public readonly gridsTaskDef: ecs.FargateTaskDefinition; // exposed for OpsStack (Task 8)
   public readonly gridsSecurityGroup: ec2.SecurityGroup; // exposed for OpsStack (Task 8)
 
@@ -89,10 +90,8 @@ export class AppStack extends cdk.Stack {
     const appSg = new ec2.SecurityGroup(this, "AppSg", { vpc: props.vpc });
     appSg.addIngressRule(albSg, ec2.Port.tcp(80));
 
-    // Attached to the WorkerService's ENIs in Task 6; not otherwise
-    // referenced by this task's code.
+    // Attached to the WorkerService's ENIs below.
     const workerSg = new ec2.SecurityGroup(this, "WorkerSg", { vpc: props.vpc });
-    void workerSg;
     const qgisSg = new ec2.SecurityGroup(this, "QgisSg", { vpc: props.vpc });
 
     // NOTE: `connections.allowFrom(appSg/workerSg/qgisSg, ...)` would add an
@@ -374,8 +373,60 @@ export class AppStack extends cdk.Stack {
     gridsContainer.addMountPoints({ containerPath: "/transformation_grids", sourceVolume: "grids", readOnly: false });
     grantEfsAccess(this.gridsTaskDef.taskRole, props.data);
 
-    // （Task 6 でサービス・ターゲットグループ・config.json 配備を追記する。
-    //   workerSg は Task 6 の WorkerService の securityGroups で使用される）
+    // --- services ---
+    this.appService = new ecs.FargateService(this, "AppService", {
+      cluster: this.cluster,
+      taskDefinition: appTaskDef,
+      desiredCount: CONFIG.appTask.desiredCount,
+      assignPublicIp: true,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      securityGroups: [appSg],
+      healthCheckGracePeriod: cdk.Duration.seconds(300),
+      minHealthyPercent: 100,
+      maxHealthyPercent: 200,
+    });
+
+    const listener = this.alb.addListener("Http", { port: 80, open: false });
+    this.targetGroup = listener.addTargets("AppTargets", {
+      port: 80,
+      targets: [this.appService.loadBalancerTarget({ containerName: "nginx", containerPort: 80 })],
+      healthCheck: {
+        path: "/api/v1/status/",
+        healthyHttpCodes: "200",
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(15),
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 5,
+      },
+      deregistrationDelay: cdk.Duration.seconds(30),
+    });
+
+    this.workerService = new ecs.FargateService(this, "WorkerService", {
+      cluster: this.cluster,
+      taskDefinition: workerTaskDef,
+      desiredCount: CONFIG.workerTask.desiredCount,
+      assignPublicIp: true,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      securityGroups: [workerSg],
+      minHealthyPercent: 0,
+      maxHealthyPercent: 100,
+    });
+
+    // --- runtime config for the SPA (frontend fetches /config.json) ---
+    new s3deploy.BucketDeployment(this, "FrontendConfig", {
+      destinationBucket: props.frontendBucket,
+      sources: [
+        s3deploy.Source.jsonData("config.json", {
+          apiUrl: `https://${this.apiDistribution.distributionDomainName}`,
+        }),
+      ],
+      distribution: props.frontendDistribution,
+      distributionPaths: ["/config.json"],
+      prune: false, // do not delete the SPA assets deployed by plan 3
+    });
+
+    new cdk.CfnOutput(this, "ApiUrl", { value: `https://${this.apiDistribution.distributionDomainName}` });
+    new cdk.CfnOutput(this, "AlbDnsName", { value: this.alb.loadBalancerDnsName });
   }
 }
 
