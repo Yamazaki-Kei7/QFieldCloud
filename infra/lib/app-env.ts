@@ -25,6 +25,9 @@ export const buildDjangoEnvironment = (inputs: DjangoEnvInputs): Record<string, 
   ENVIRONMENT: "production",
   DEBUG: "0",
   DJANGO_SETTINGS_MODULE: "qfieldcloud.settings",
+  // read unconditionally at settings.py module top-level (custom CA volume name);
+  // a missing value crashes every Django container on startup with KeyError.
+  COMPOSE_PROJECT_NAME: "qfc",
   // '*' is safe here: CloudFront cannot forward a Host that does not match
   // the distribution, the ALB is internal-only, and ALB health checks use
   // the task IP as Host (design doc §3.2).
@@ -63,8 +66,11 @@ export const buildDjangoEnvironment = (inputs: DjangoEnvInputs): Record<string, 
   STORAGES_PROJECT_DEFAULT_STORAGE: "default",
   EMAIL_HOST: `email-smtp.${inputs.region}.amazonaws.com`,
   EMAIL_PORT: "587",
-  EMAIL_USE_TLS: "1",
-  EMAIL_USE_SSL: "0",
+  // NOTE: settings.py parses these two as `os.environ[...].lower() == "true"`
+  // (not the shared parse_string_to_bool "0"/"1" convention used elsewhere
+  // in this file) — "1"/"0" here would silently disable TLS.
+  EMAIL_USE_TLS: "true",
+  EMAIL_USE_SSL: "false",
   DEFAULT_FROM_EMAIL: inputs.defaultFromEmail,
   CORS_ALLOWED_ORIGINS: `https://${inputs.frontendDomainName}`,
   CORS_ALLOW_CREDENTIALS: "0",

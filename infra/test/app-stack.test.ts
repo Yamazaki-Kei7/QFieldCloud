@@ -76,3 +76,29 @@ test("API distribution uses a VPC origin", () => {
   const template = synthApp();
   template.resourceCountIs("AWS::CloudFront::VpcOrigin", 1);
 });
+
+test("app container defines env vars that settings.py reads unconditionally", () => {
+  const template = synthApp();
+  // these are read at settings.py module top-level; a missing key crashes every
+  // Django container on startup (not catchable by synth alone)
+  const required = [
+    "COMPOSE_PROJECT_NAME",
+    "QFIELDCLOUD_HOST",
+    "ENVIRONMENT",
+    "EMAIL_HOST",
+    "EMAIL_USE_TLS",
+  ];
+  const taskDefs = template.findResources("AWS::ECS::TaskDefinition");
+  const appTaskDef = Object.values(taskDefs).find(
+    (t) => t.Properties.Family === "qfc-app",
+  );
+  const appContainer = appTaskDef!.Properties.ContainerDefinitions.find(
+    (c: { Name: string }) => c.Name === "app",
+  );
+  const envNames = new Set(
+    (appContainer.Environment as Array<{ Name: string }>).map((e) => e.Name),
+  );
+  for (const key of required) {
+    expect(envNames.has(key)).toBe(true);
+  }
+});

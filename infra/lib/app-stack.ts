@@ -32,8 +32,8 @@ export class AppStack extends cdk.Stack {
   public readonly appLogGroup: logs.LogGroup;
   public readonly workerLogGroup: logs.LogGroup;
   public readonly targetGroup!: elbv2.ApplicationTargetGroup; // assigned in Task 6
-  public readonly gridsTaskDef!: ecs.FargateTaskDefinition; // exposed for OpsStack (Task 8)
-  public readonly gridsSecurityGroup!: ec2.SecurityGroup; // exposed for OpsStack (Task 8)
+  public readonly gridsTaskDef: ecs.FargateTaskDefinition; // exposed for OpsStack (Task 8)
+  public readonly gridsSecurityGroup: ec2.SecurityGroup; // exposed for OpsStack (Task 8)
 
   constructor(scope: Construct, id: string, props: AppStackProps) {
     super(scope, id, props);
@@ -315,7 +315,11 @@ export class AppStack extends cdk.Stack {
     );
     // Fargate tags on RunTask
     workerTaskDef.taskRole.addToPrincipalPolicy(
-      new iam.PolicyStatement({ actions: ["ecs:TagResource"], resources: ["*"] }),
+      new iam.PolicyStatement({
+        actions: ["ecs:TagResource"],
+        resources: ["*"],
+        conditions: { ArnEquals: { "ecs:cluster": this.cluster.clusterArn } },
+      }),
     );
 
     // --- one-off migrate task (run manually / from CI: see README) ---
