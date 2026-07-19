@@ -51,6 +51,13 @@ export class AppStack extends cdk.Stack {
       operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
     };
 
+    // First deploy brings services up at 0 so `cdk deploy` completes without
+    // waiting on tasks that pull not-yet-migrated schema; run the migrate task,
+    // then redeploy without this flag to scale services up. See infra/README.md.
+    const servicesEnabled =
+      this.node.tryGetContext("servicesEnabled") !== "false";
+    const desired = (count: number): number => (servicesEnabled ? count : 0);
+
     // --- ECR repositories (RegistryStack, deployed before this stack; images
     //     are pushed by infra/scripts/push-images.sh) ---
     const repos = props.repositories;
@@ -234,8 +241,8 @@ export class AppStack extends cdk.Stack {
 
     props.data.filesBucket.grantReadWrite(appTaskDef.taskRole);
 
-    // --- worker task: dequeue loop + cron sidecar. Mounts the io access
-    //     point at /tmp — the cross-container exchange contract (§4.3). ---
+    // --- worker task: dequeue loop. Mounts the io access point at /tmp — the
+    //     cross-container exchange contract (§4.3). ---
     const workerTaskDef = new ecs.FargateTaskDefinition(this, "TaskDef-worker", {
       family: `${CONFIG.appName}-worker`,
       cpu: CONFIG.workerTask.cpu,
@@ -261,16 +268,6 @@ export class AppStack extends cdk.Stack {
       essential: true,
     });
     wrapperContainer.addMountPoints({ containerPath: "/tmp", sourceVolume: "io", readOnly: false });
-
-    workerTaskDef.addContainer("cron", {
-      containerName: "cron",
-      image: ecs.ContainerImage.fromEcrRepository(repos.worker, "latest"),
-      logging: ecs.LogDrivers.awsLogs({ logGroup: this.workerLogGroup, streamPrefix: "cron" }),
-      environment,
-      secrets: djangoSecrets,
-      command: ["bash", "-c", "while true; do python manage.py runcrons; sleep 60; done"],
-      essential: false,
-    });
 
     props.data.filesBucket.grantReadWrite(workerTaskDef.taskRole);
     grantEfsAccess(workerTaskDef.taskRole, props.data);
@@ -331,7 +328,14 @@ export class AppStack extends cdk.Stack {
       logging: ecs.LogDrivers.awsLogs({ logGroup: this.appLogGroup, streamPrefix: "migrate" }),
       environment,
       secrets: djangoSecrets,
-      command: ["python", "manage.py", "migrate"],
+      command: [
+        "bash",
+        "-c",
+        // Aurora has no postgis extension by default (docker-compose used the
+        // postgis/postgis image which pre-creates it). The master DB user has
+        // rds_superuser and can create it. Idempotent.
+        "python manage.py shell -c \"from django.db import connection; connection.cursor().execute('CREATE EXTENSION IF NOT EXISTS postgis')\" && python manage.py migrate",
+      ],
     });
 
     // --- grids mirror task (scheduled from OpsStack, also run once at bootstrap) ---
@@ -371,7 +375,7 @@ export class AppStack extends cdk.Stack {
     this.appService = new ecs.FargateService(this, "AppService", {
       cluster: this.cluster,
       taskDefinition: appTaskDef,
-      desiredCount: CONFIG.appTask.desiredCount,
+      desiredCount: desired(CONFIG.appTask.desiredCount),
       assignPublicIp: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroups: [appSg],
@@ -398,13 +402,44 @@ export class AppStack extends cdk.Stack {
     this.workerService = new ecs.FargateService(this, "WorkerService", {
       cluster: this.cluster,
       taskDefinition: workerTaskDef,
-      desiredCount: CONFIG.workerTask.desiredCount,
+      desiredCount: desired(CONFIG.workerTask.desiredCount),
       assignPublicIp: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroups: [workerSg],
       minHealthyPercent: 0,
       maxHealthyPercent: 100,
     });
+
+    // --- cron task: a single runcrons loop. Dedicated service at desiredCount 1
+    //     so scheduled jobs (notifications, cleanup) run exactly once, unlike a
+    //     sidecar on the multi-replica worker task which would run N times. ---
+    const cronTaskDef = new ecs.FargateTaskDefinition(this, "TaskDef-cron", {
+      family: `${CONFIG.appName}-cron`,
+      cpu: 256,
+      memoryLimitMiB: 512,
+      runtimePlatform,
+    });
+    cronTaskDef.addContainer("cron", {
+      containerName: "cron",
+      image: ecs.ContainerImage.fromEcrRepository(repos.worker, "latest"),
+      logging: ecs.LogDrivers.awsLogs({ logGroup: this.workerLogGroup, streamPrefix: "cron" }),
+      environment,
+      secrets: djangoSecrets,
+      command: ["bash", "-c", "while true; do python manage.py runcrons; sleep 60; done"],
+    });
+    props.data.filesBucket.grantReadWrite(cronTaskDef.taskRole);
+
+    const cronService = new ecs.FargateService(this, "CronService", {
+      cluster: this.cluster,
+      taskDefinition: cronTaskDef,
+      desiredCount: desired(1),
+      assignPublicIp: true,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      securityGroups: [workerSg],
+      minHealthyPercent: 0,
+      maxHealthyPercent: 100,
+    });
+    void cronService;
 
     // --- runtime config for the SPA (frontend fetches /config.json) ---
     new s3deploy.BucketDeployment(this, "FrontendConfig", {

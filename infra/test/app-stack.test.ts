@@ -129,3 +129,85 @@ test("target group health check hits the status endpoint", () => {
     HealthCheckPath: "/api/v1/status/",
   });
 });
+
+test("all Fargate task definitions pin X86_64 (QGIS image is amd64-only)", () => {
+  const template = synthApp();
+  const taskDefs = template.findResources("AWS::ECS::TaskDefinition");
+  const families = Object.values(taskDefs).map((t) => t.Properties.Family);
+  // app, worker, qgis3, qgis4, migrate, grids-mirror, cron
+  expect(families.sort()).toEqual(
+    [
+      "qfc-app",
+      "qfc-cron",
+      "qfc-grids-mirror",
+      "qfc-migrate",
+      "qfc-qgis3",
+      "qfc-qgis4",
+      "qfc-worker",
+    ].sort(),
+  );
+  for (const t of Object.values(taskDefs)) {
+    expect(t.Properties.RuntimePlatform).toMatchObject({ CpuArchitecture: "X86_64" });
+  }
+});
+
+test("cron runs as its own dedicated single-container task definition (not a worker sidecar)", () => {
+  const template = synthApp();
+  template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+    Family: "qfc-cron",
+    ContainerDefinitions: [Match.objectLike({ Name: "cron" })],
+  });
+  // the worker task definition must no longer carry the cron sidecar
+  const taskDefs = template.findResources("AWS::ECS::TaskDefinition");
+  const workerTaskDef = Object.values(taskDefs).find(
+    (t) => t.Properties.Family === "qfc-worker",
+  );
+  const containerNames = (
+    workerTaskDef!.Properties.ContainerDefinitions as Array<{ Name: string }>
+  ).map((c) => c.Name);
+  expect(containerNames).not.toContain("cron");
+});
+
+test("migrate command creates the postgis extension before running migrate", () => {
+  const template = synthApp();
+  const taskDefs = template.findResources("AWS::ECS::TaskDefinition");
+  const migrateTaskDef = Object.values(taskDefs).find(
+    (t) => t.Properties.Family === "qfc-migrate",
+  );
+  const migrateContainer = migrateTaskDef!.Properties.ContainerDefinitions.find(
+    (c: { Name: string }) => c.Name === "migrate",
+  );
+  const command: string[] = migrateContainer.Command;
+  expect(command[command.length - 1]).toEqual(
+    expect.stringContaining("CREATE EXTENSION IF NOT EXISTS postgis"),
+  );
+  expect(command[command.length - 1]).toEqual(expect.stringContaining("manage.py migrate"));
+});
+
+test("services default to desiredCount > 0, but scale to 0 when servicesEnabled=false context is set (phased first deploy)", () => {
+  const withServices = synthApp();
+  const appServiceCounts = Object.values(
+    withServices.findResources("AWS::ECS::Service"),
+  ).map((s) => s.Properties.DesiredCount);
+  expect(appServiceCounts.every((c) => c > 0)).toBe(true);
+
+  const app = new cdk.App({ context: { servicesEnabled: "false" } });
+  const env = { account: "123456789012", region: "ap-northeast-1" };
+  const network = new NetworkStack(app, "TestNetwork2", { env });
+  const data = new DataStack(app, "TestData2", { env, vpc: network.vpc });
+  const frontend = new FrontendStack(app, "TestFrontend2", { env });
+  const registry = new RegistryStack(app, "TestRegistry2", { env });
+  const appStack = new AppStack(app, "TestApp2", {
+    env,
+    vpc: network.vpc,
+    data,
+    frontendBucket: frontend.bucket,
+    frontendDistribution: frontend.distribution,
+    repositories: registry.repositories,
+  });
+  const disabledTemplate = Template.fromStack(appStack);
+  const disabledCounts = Object.values(
+    disabledTemplate.findResources("AWS::ECS::Service"),
+  ).map((s) => s.Properties.DesiredCount);
+  expect(disabledCounts.every((c) => c === 0)).toBe(true);
+});
