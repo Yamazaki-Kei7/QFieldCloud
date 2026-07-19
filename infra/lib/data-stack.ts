@@ -76,12 +76,14 @@ export class DataStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    // SALT_KEY/SECRET_KEY loss would make retained EncryptedTextField data undecryptable
     const generated = (name: string): sm.Secret =>
       new sm.Secret(this, name, {
         generateSecretString: {
           passwordLength: 50,
           excludeCharacters: "\"'`\\",
         },
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
       });
 
     this.djangoSecretKey = generated("DjangoSecretKey");
@@ -93,6 +95,7 @@ export class DataStack extends cdk.Stack {
         username: cdk.SecretValue.unsafePlainText("CHANGE_ME"),
         password: cdk.SecretValue.unsafePlainText("CHANGE_ME"),
       },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
   }
 }

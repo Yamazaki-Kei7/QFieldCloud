@@ -60,6 +60,20 @@ test("access points enforce the cross-container sharing permissions", () => {
   });
 });
 
+test("app-owned secrets (Django keys, SES SMTP) are retained on stack deletion", () => {
+  const template = synth();
+  // SALT_KEY/SECRET_KEY loss would make retained EncryptedTextField data
+  // undecryptable, so these must survive a stack delete (unlike the RDS
+  // master-password secret, which is recoverable via password reset).
+  template.hasResource("AWS::SecretsManager::Secret", {
+    DeletionPolicy: "Retain",
+  });
+  const secrets = template.findResources("AWS::SecretsManager::Secret", {
+    DeletionPolicy: "Retain",
+  });
+  expect(Object.keys(secrets)).toHaveLength(3);
+});
+
 test("bucket enforces SSL and Aurora pins engine and capacity", () => {
   const template = synth();
   template.hasResourceProperties("AWS::S3::BucketPolicy", {
