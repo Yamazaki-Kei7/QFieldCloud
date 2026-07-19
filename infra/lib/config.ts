@@ -6,7 +6,7 @@ export interface QfcConfig {
   readonly alarmEmail: string;
   /** SES-verified sender address (see infra/README.md bootstrap steps). */
   readonly defaultFromEmail: string;
-  /** Fargate CPU architecture. Switch to "X86_64" if arm64 image builds fail. */
+  /** Fargate CPU architecture. X86_64 because the QGIS image (docker-qgis) is amd64-only. */
   readonly cpuArchitecture: "ARM64" | "X86_64";
   readonly appTask: { readonly cpu: number; readonly memoryMiB: number; readonly desiredCount: number };
   readonly workerTask: { readonly cpu: number; readonly memoryMiB: number; readonly desiredCount: number };
@@ -19,7 +19,7 @@ export const CONFIG: QfcConfig = {
   region: "ap-northeast-1",
   alarmEmail: "yamazaki@mierune.co.jp",
   defaultFromEmail: "yamazaki@mierune.co.jp",
-  cpuArchitecture: "ARM64",
+  cpuArchitecture: "X86_64",
   appTask: { cpu: 512, memoryMiB: 2048, desiredCount: 1 },
   workerTask: { cpu: 256, memoryMiB: 1024, desiredCount: 2 },
   qgisTask: { cpu: 1024, memoryMiB: 4096 },
