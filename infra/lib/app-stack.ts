@@ -16,12 +16,15 @@ import { Construct } from "constructs";
 import { CONFIG } from "./config";
 import { buildDjangoEnvironment } from "./app-env";
 import { DataStack } from "./data-stack";
+import { RepoName } from "./registry-stack";
 
 export interface AppStackProps extends cdk.StackProps {
   readonly vpc: ec2.Vpc;
   readonly data: DataStack;
   readonly frontendBucket: s3.Bucket;
   readonly frontendDistribution: cloudfront.Distribution;
+  /** ECR repositories from RegistryStack, deployed before this stack (Fix 4). */
+  readonly repositories: Record<RepoName, ecr.Repository>;
 }
 
 export class AppStack extends cdk.Stack {
@@ -48,18 +51,9 @@ export class AppStack extends cdk.Stack {
       operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
     };
 
-    // --- ECR repositories (images are pushed by infra/scripts/push-images.sh) ---
-    const repoNames = ["app", "worker", "nginx", "qgis3", "qgis4"] as const;
-    const repos = Object.fromEntries(
-      repoNames.map((name) => [
-        name,
-        new ecr.Repository(this, `Repo-${name}`, {
-          repositoryName: `${CONFIG.appName}-${name}`,
-          imageScanOnPush: true,
-          removalPolicy: cdk.RemovalPolicy.RETAIN,
-        }),
-      ]),
-    ) as Record<(typeof repoNames)[number], ecr.Repository>;
+    // --- ECR repositories (RegistryStack, deployed before this stack; images
+    //     are pushed by infra/scripts/push-images.sh) ---
+    const repos = props.repositories;
 
     // --- cluster and log groups ---
     this.cluster = new ecs.Cluster(this, "Cluster", {
