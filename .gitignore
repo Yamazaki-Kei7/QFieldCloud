@@ -26,3 +26,6 @@ docker-app/qfieldcloud/locale/**/*.mo
 
 # Superpowers brainstorming sessions
 .superpowers/
+
+# Local isolated development worktrees
+.worktrees/

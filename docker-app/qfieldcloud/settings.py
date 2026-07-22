@@ -80,7 +80,9 @@ AUTHENTICATION_BACKENDS = [
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache",
-        "LOCATION": "memcached:11211",
+        # docker-compose deployments resolve the `memcached` service name;
+        # AWS deployments run memcached as a sidecar on 127.0.0.1 (see infra/).
+        "LOCATION": os.environ.get("QFIELDCLOUD_MEMCACHED_LOCATION", "memcached:11211"),
         "OPTIONS": {
             "no_delay": True,
             "ignore_exc": True,

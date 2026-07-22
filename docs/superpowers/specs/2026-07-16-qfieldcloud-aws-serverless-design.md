@@ -34,9 +34,9 @@
   │
   ├─ CloudFront①（フロント用 dxxxx.cloudfront.net）→ S3（SvelteKit SPA 静的配信、OAC）
   └─ CloudFront②（API用 dyyyy.cloudfront.net、キャッシュ無効・全パス転送）
-       │  ビューワープロトコル: HTTPSのみ
-       ▼ HTTP（シークレットヘッダー付与）
-     ALB（HTTP:80、インバウンドは CloudFront プレフィックスリスト + ヘッダー検証で制限）
+       │  ビューワープロトコル: HTTPS（HTTP はリダイレクト）
+       ▼ VPC オリジン（AWS 網内で完結・追加料金なし）
+     内部 ALB（HTTP:80、インターネット非公開）
        ▼
   ┌────────── VPC（2AZ・デュアルスタック）──────────┐
   │ パブリックサブネット（dual-stack、タスクにパブリックIP付与）│
@@ -44,6 +44,7 @@
   │   - ECS Fargate: worker_wrapper（dequeue + cron サイドカー） │
   │   - ECS Fargate: qgis3/qgis4 ジョブタスク（都度起動）        │
   │ プライベートサブネット                                       │
+  │   - 内部 ALB（VPC オリジン経由でのみ到達）                   │
   │   - Aurora Serverless v2（PostgreSQL + PostGIS、0.5 ACU〜）  │
   │   - EFS（/io 受け渡し + PROJ 変換格子）                      │
   │ S3 Gateway Endpoint（無料）                                  │
@@ -59,25 +60,23 @@
   - セキュリティ: SG でインバウンド完全封鎖（app は ALB の SG からのみ、worker/QGIS ジョブはインバウンドなし）。
 - IPv6-only サブネット + EIGW 案は、地理院タイル等 IPv4-only の外部 WMS/タイルサービスへ到達できずジョブが失敗するリスクがあるため不採用（将来の再検討事項）。
 - Aurora / EFS はプライベートサブネット（アウトバウンド不要のため NAT 不要）。
-- ALB はデュアルスタックモード（モバイル回線の IPv6 クライアントは v6 で接続）。
+- ALB は internal（VPC オリジン専用、§3.2）のためデュアルスタック不要。モバイル回線の IPv6 クライアント対応は CloudFront 側（IPv6 有効、デフォルト）で担保。
 
 ### 3.2 ドメイン・TLS（Route 53 / ACM 不使用）
 
 - フロント: CloudFront + S3。標準ドメインに自動付与される証明書を利用。
 - API: **ALB 単体では有効な証明書を付けられない**（ACM はドメイン所有が前提）ため、API 用 CloudFront を立てて標準ドメインで包む。キャッシュ無効（CachingDisabled）+ 全ヘッダー転送（AllViewer 系オリジンリクエストポリシー、Host 含む）。
-- ALB 直接アクセスの遮断（二重）:
-  1. SG インバウンドを CloudFront オリジンフェイシングのマネージドプレフィックスリストに限定
-  2. CloudFront がカスタムオリジンヘッダー（シークレット値）を付与し、ALB リスナールールで検証（不一致は 403）
-- **CloudFront→ALB 間は HTTP（平文）**。以下で整合性を担保（コード確認済み・無改修）:
+- **CloudFront VPC オリジンを採用（2026-07-16 設計更新・ユーザー承認済み）**: ALB は internal（インターネット非公開・プライベートサブネット）とし、CloudFront から VPC オリジン経由で直接接続する。当初案（パブリック ALB + プレフィックスリスト SG + シークレットヘッダー検証）は不要になり、CloudFront→ALB 間のトラフィックが公衆経路を通らなくなる。追加料金なし。ALB の SG は VPC 内からの HTTP:80 のみ許可。
+- **CloudFront→ALB 間は HTTP（平文だが AWS 網内・VPC 内で完結）**。以下で整合性を担保（コード確認済み・無改修）:
   - Django は `SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")` 設定済み（`settings.py:68`）
   - サイドカー用 nginx 設定で `proxy_set_header X-Forwarded-Proto https;` を**固定値**で送る（現行テンプレートの `$scheme` のままだと管理画面ログインが CSRF 403 になり、メール内リンクが `http://` になる）
   - API 用 CloudFront のビューワープロトコルは HTTPS のみなので、固定値は事実と一致
   - ファイルダウンロード分岐（`filestorage/view_helpers.py:278`）は `X-Forwarded-For` の存在のみを見るため影響なし（ALB が必ず付与）
 - 了承済みトレードオフ:
   1. URL がランダム文字列（`dxxxx.cloudfront.net`）になる。独自ドメインは後から ACM + エイリアス追加のみで導入可能
-  2. CloudFront→ALB 間が平文（到達制御はするが経路暗号化なし）。独自ドメイン導入で解消可能
+  2. CloudFront→ALB 間が平文（VPC オリジン採用により経路は AWS 網内・VPC 内で完結。公衆経路の平文という当初の懸念は解消済み）
   3. 数 GB 級の大容量アップロードは CloudFront 経由の実測が必要（必要ならタイムアウト緩和申請）
-- `DJANGO_ALLOWED_HOSTS` に API 用 CloudFront ドメインを設定。`QFIELDCLOUD_HOST` も同値。
+- `QFIELDCLOUD_HOST` は API 用 CloudFront ドメイン。`DJANGO_ALLOWED_HOSTS` は `*` とする: ALB ヘルスチェックが Host=タスクIP で `/api/v1/status/` を叩くため固定リストでは賄えない。CloudFront は自身のドメインと一致しない Host を転送できず、ALB は internal で VPC 外から到達不能なため、Host ヘッダー攻撃の現実的経路はなく許容範囲（独自ドメイン導入時に再検討）。
 
 ### 3.3 コンポーネント設計
 
@@ -130,7 +129,7 @@
 - 現行: wrapper が `tempfile.mkdtemp(dir=TMP_FILE)` で作った一時ディレクトリをホストバインドで QGIS コンテナの `/io` にマウント。中身は主に `feedback.json`（プロジェクトデータ本体は QGIS コンテナが `QFIELDCLOUD_URL` + ワーカートークンで API から直接取得/返却）。
 - 新構成: EFS アクセスポイント `/io` を wrapper タスク（`TMP_DIRECTORY` として）と QGIS タスク定義（`/mnt/io`）の両方にマウント。wrapper の既存 mkdtemp はそのまま動く。
 - **QGIS 側の改修は1箇所**: `docker-qgis/qfc_worker/commands_base.py:79` の `Path("/io/feedback.json")` を環境変数 `QFC_IO_DIR`（デフォルト `/io`）化し、エグゼキュータが `QFC_IO_DIR=/mnt/io/<ジョブ用サブディレクトリ>` を注入。後方互換のため upstream への PR 提案も可能。
-- 後始末: ジョブ完了時に wrapper がサブディレクトリを削除。EFS ライフサイクルポリシーをバックストップとして設定。
+- 後始末: ジョブ完了時に wrapper がサブディレクトリを削除（これが唯一の削除手段）。EFS のライフサイクルポリシー（IA移行）はコスト最適化であり自動削除ではない点に注意 — wrapper 異常終了で孤児化したディレクトリは残るが、内容は feedback.json 中心の数MB規模で実害は小さい（2026-07-17 レビュー指摘で表現を是正）。
 
 ### 4.4 IAM（wrapper タスクロール）
 
